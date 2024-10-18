@@ -1,0 +1,116 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <openssl/des.h>
+#include <openssl/rand.h>
+#include <string.h>
+#include <dirent.h>
+#include <sys/stat.h>
+
+void handleErrors() {
+    fprintf(stderr, "An error occurred.\n");
+    exit(EXIT_FAILURE);
+}
+
+void encrypt_decrypt_file(const char *input_filename, const char *output_filename, const unsigned char *key, int mode) {
+    FILE *input_file = fopen(input_filename, "rb");
+    FILE *output_file = fopen(output_filename, "wb");
+
+    if (input_file == NULL || output_file == NULL) {
+        perror("File error");
+        exit(EXIT_FAILURE);
+    }
+
+    DES_key_schedule des_key;
+    unsigned char iv[DES_KEY_SZ];  // DES 블록 크기
+    unsigned char buffer[DES_KEY_SZ];
+    unsigned char out_buffer[DES_KEY_SZ];
+
+    // 초기화 벡터 설정
+    if (!RAND_bytes(iv, DES_KEY_SZ)) {
+        handleErrors();
+    }
+
+    // 암호화 혹은 복호화 모드 설정
+    DES_set_key((DES_cblock*)key, &des_key);
+
+    if (mode == DES_ENCRYPT) {
+        fwrite(iv, 1, DES_KEY_SZ, output_file);  // 초기화 벡터를 첫 번째로 저장
+    } else {
+        fread(iv, 1, DES_KEY_SZ, input_file);  // 복호화 시 초기화 벡터를 읽음
+    }
+
+    int bytes_read;
+    while ((bytes_read = fread(buffer, 1, DES_KEY_SZ, input_file)) > 0) {
+        if (mode == DES_ENCRYPT) {
+            DES_ncbc_encrypt(buffer, out_buffer, bytes_read, &des_key, (DES_cblock*)iv, DES_ENCRYPT);
+        } else {
+            DES_ncbc_encrypt(buffer, out_buffer, bytes_read, &des_key, (DES_cblock*)iv, DES_DECRYPT);
+        }
+        fwrite(out_buffer, 1, bytes_read, output_file);
+    }
+
+    fclose(input_file);
+    fclose(output_file);
+}
+
+void process_directory(const char *dirname, const unsigned char *key, int mode) {
+    DIR *dir;
+    struct dirent *entry;
+
+    if ((dir = opendir(dirname)) == NULL) {
+        perror("opendir() error");
+        exit(EXIT_FAILURE);
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        // . 과 .. 은 제외
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        char input_filepath[1024];
+        char output_filepath[1024];
+
+        snprintf(input_filepath, sizeof(input_filepath), "%s/%s", dirname, entry->d_name);
+        snprintf(output_filepath, sizeof(output_filepath), "%s/%s.enc", dirname, entry->d_name); // 암호화된 파일 확장자 추가
+
+        // 파일 속성을 확인하여 디렉터리인지 파일인지 확인
+        struct stat file_stat;
+        stat(input_filepath, &file_stat);
+        
+        if (S_ISREG(file_stat.st_mode)) {
+            if (mode == DES_ENCRYPT) {
+                printf("Encrypting file: %s\n", input_filepath);
+                encrypt_decrypt_file(input_filepath, output_filepath, key, DES_ENCRYPT);
+            } else {
+                printf("Decrypting file: %s\n", input_filepath);
+                // 복호화 시 원본 확장자에서 ".enc" 제거
+                snprintf(output_filepath, sizeof(output_filepath), "%s/%.*s", dirname, (int)(strlen(entry->d_name) - 4), entry->d_name);
+                encrypt_decrypt_file(input_filepath, output_filepath, key, DES_DECRYPT);
+            }
+        }
+    }
+    closedir(dir);
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <encrypt/decrypt> <directory>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    unsigned char key[8] = "mydeskey";  // DES 키 (8바이트)
+
+    if (strcmp(argv[1], "encrypt") == 0) {
+        process_directory(argv[2], key, DES_ENCRYPT);
+        printf("Directory encrypted successfully.\n");
+    } else if (strcmp(argv[1], "decrypt") == 0) {
+        process_directory(argv[2], key, DES_DECRYPT);
+        printf("Directory decrypted successfully.\n");
+    } else {
+        fprintf(stderr, "Invalid mode. Use 'encrypt' or 'decrypt'.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    return 0;
+}
